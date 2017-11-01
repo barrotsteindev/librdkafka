@@ -30,10 +30,6 @@
  #include "rdunittest.h"
  #include "rdmurmur2.h"
 
-int is_aligned(void *p, int alignment) {
-        return (int)p % alignment == 0;
-}
-
 int unittest_murmurhashneutral2 (void) {
         const char *keysToTest[] = {
                 "kafka",
