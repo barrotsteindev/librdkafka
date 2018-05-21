@@ -211,6 +211,73 @@ static void do_test_produce_retries (const char *topic, int should_fail) {
         TEST_SAY(_C_GRN "Test produce retries (should_fail=%d): PASS\n",
                  should_fail);
 }
+
+static void do_test_produce_max_retries (const char *topic) {
+        rd_kafka_t *rk;
+        rd_kafka_conf_t *conf;
+        rd_kafka_topic_t *rkt;
+        uint64_t testid;
+        rd_kafka_resp_err_t err;
+        int msgcnt = 1;
+        
+        TEST_SAY(_C_BLU "Test produce max retries (should_fail=%d)\n", 1);
+        
+        memset(&ctrl, 0, sizeof(ctrl));
+        mtx_init(&ctrl.lock, mtx_plain);
+        cnd_init(&ctrl.cnd);
+        
+        testid = test_id_generate();
+        
+        test_conf_init(&conf, NULL, 60);
+        test_conf_set(conf, "socket.timeout.ms", "1000");
+        /* Avoid disconnects on request timeouts */
+        test_conf_set(conf, "socket.max.fails", "100");
+
+        test_conf_set(conf, "retries", "5");
+        test_curr->exp_dr_err = RD_KAFKA_RESP_ERR__MSG_TIMED_OUT;
+        test_conf_set(conf, "retry.backoff.ms", "5000");
+        rd_kafka_conf_set_dr_cb(conf, test_dr_cb);
+        test_socket_enable(conf);
+        test_curr->is_fatal_cb = is_fatal_cb;
+        
+        rk = test_create_handle(RD_KAFKA_PRODUCER, conf);
+        rkt = test_create_producer_topic(rk, topic, NULL);
+        
+        if (thrd_create(&ctrl.thrd, ctrl_thrd_main, test_curr) != thrd_success)
+                TEST_FAIL("Failed to create sockem ctrl thread");
+        
+        /* Create the topic to make sure connections are up and ready. */
+        err = test_auto_create_topic_rkt(rk, rkt);
+        TEST_ASSERT(!err, "topic creation failed: %s", rd_kafka_err2str(err));
+        
+        /* Set initial delay to 3s */
+        set_delay(0, 3000); /* Takes effect immediately */
+        
+        /* After two retries, remove the delay, the third retry
+         * should kick in and work. */
+        set_delay(((1000 /*socket.timeout.ms*/ +
+                    5000 /*retry.backoff.ms*/) * 50) - 2000, 0);
+        
+        test_produce_msgs(rk, rkt, testid, RD_KAFKA_PARTITION_UA,
+                          0, msgcnt, NULL, 0);
+        
+        
+        rd_kafka_topic_destroy(rkt);
+        rd_kafka_destroy(rk);
+
+        
+        /* Join controller thread */
+        mtx_lock(&ctrl.lock);
+        ctrl.term = 1;
+        mtx_unlock(&ctrl.lock);
+        thrd_join(ctrl.thrd, NULL);
+        
+        cnd_destroy(&ctrl.cnd);
+        mtx_destroy(&ctrl.lock);
+        
+        TEST_SAY(_C_GRN "Test produce retries (should_fail=%d): PASS\n",
+                 1);
+}
 #endif
 
 
@@ -356,6 +423,7 @@ int main_0076_produce_retry (int argc, char **argv) {
         const char *topic = test_mk_topic_name("0076_produce_retry", 1);
 
 #if WITH_SOCKEM
+        do_test_produce_max_retries(topic);
         do_test_produce_retries(topic, 0/*good test*/);
         do_test_produce_retries(topic, 1/*fail test*/);
 #endif
